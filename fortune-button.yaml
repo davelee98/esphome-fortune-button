@@ -1,0 +1,465 @@
+# ---------------------------------------------------------------------------
+# Fortune Button - a standalone yes/no oracle with lights and a buzzer
+# Official ESPHome Starter Kit (ESP32-C6 + FPC modules):
+#   Button module       -> GPIO6
+#   RGB + Buzzer module -> 10x WS2812 on GPIO14 (arranged as a ring, 5 V),
+#                          2.7 kHz buzzer on GPIO18 via a transistor
+#   Accessory power     -> GPIO4 switches +3V3_CTRL, the buzzer's supply.
+#                          Without it the device is silent.
+#
+# Power is USB-C only. No battery, no sleep.
+#
+# The light design assumes the LEDs are a closed loop: index 9 sits next to
+# index 0. If yours are actually a strip, swap think_spin for the
+# addressable_scan effect, which bounces instead of wrapping. ring_cw sets
+# which way is clockwise for the spin and the yes fill.
+#
+# The sad trombone is a pitch/level contour replayed on the buzzer pin by a
+# local component - see components/pwm_speech/.
+#
+# Directory layout - keep these together; paths are relative to this file.
+#   fortune-button.yaml                          <- this file
+#   components/pwm_speech/                       <- sad trombone
+# ---------------------------------------------------------------------------
+
+substitutions:
+  button_pin: GPIO6
+  buzzer_pin: GPIO18
+  pixel_pin: GPIO14
+  pixel_count: "10"
+  accessory_power_pin: GPIO4
+
+  # 1 if LED indices increase clockwise around the ring, -1 if they increase
+  # anticlockwise. Used by the spin pointer and the yes fill. Check on the
+  # hardware and flip if both turn the wrong way.
+  ring_cw: "1"
+
+  # Odds out of 100: a roll below yes_max is yes, anything else is no.
+  yes_max: "50"
+
+  # The idle breathe fades out after this long with no button press. The
+  # next press starts a reading as usual and the glow comes back after it.
+  idle_timeout: "60s"
+
+  # Shared tempo in quarter notes per minute. Drives the yes chime, the no
+  # blinks and the longest a spin tick can be (one eighth note).
+  tempo_bpm: "120"
+
+  # Yes: total time for green to fill the ring, first LED at 0 ms, last at
+  # yes_fill_ms.
+  yes_fill_ms: "1000"
+
+  # Spin ticks: one beep per LED the wheel passes, all at one pitch.
+  # Tone length = spin_tone_fraction x time between LEDs, capped at one
+  # eighth note at tempo_bpm, so the beeps are short at full speed and grow
+  # as the wheel slows until they hit the cap. 2700 Hz is the buzzer's
+  # rated resonance, its loudest note. Level is PWM duty; 0.5 is loudest.
+  #
+  # Each spin picks a random tick count, spin_ticks plus or minus
+  # spin_tick_spread (50-60 by default, so always at least 5 laps of the
+  # 10-LED ring). The wheel slows at a steady rate, like a wheel against
+  # friction, and each spin picks its start speed so that it is moving at
+  # spin_end_speed LEDs per second when the last tick lands, spin_settle_ms
+  # before the spin ends. That makes it start at 17-21 LEDs/s. The pointer
+  # then holds still until the ring goes dark. The whole spin lasts spin_ms.
+  spin_ticks: "55"
+  spin_tick_spread: "5"
+  spin_end_speed: "2"
+  spin_ms: "5600"
+  spin_settle_ms: "500"
+  # Wheel look: every LED white at spin_white_level (0-1), one blue pointer
+  # at full brightness. ESPHome gamma-corrects, so 0.6 shows as a soft white.
+  spin_white_level: "0.6"
+  spin_tone_hz: "2700"
+  spin_tone_fraction: "0.5"
+  spin_tone_level: "0.5"
+
+esphome:
+  name: fortune-button
+  friendly_name: Fortune Button
+  on_shutdown:
+    - switch.turn_off: accessory_power
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: idle_glow
+
+esp32:
+  variant: esp32c6
+  framework:
+    type: esp-idf       # required - the C6 has no Arduino framework support
+
+logger:
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+# ---------------------------------------------------------------------------
+# No wifi:, no api:, no ota:. If you add them for OTA convenience, keep BOTH
+# reboot_timeout values at 0s or the device reboots every 15 minutes when
+# nothing connects - which will happen mid-sentence.
+# ---------------------------------------------------------------------------
+
+# Accessory power. GPIO4 enables the load switch that feeds +3V3_CTRL, which
+# powers the buzzer on the LED/buzzer module. The LEDs run from 5 V and the
+# button needs no power, so without this everything works except sound.
+# setup_priority 2000 brings it up before the outputs are set up. Mirrors
+# Apollo's reference config for the kit.
+switch:
+  - platform: gpio
+    pin: ${accessory_power_pin}
+    id: accessory_power
+    restore_mode: ALWAYS_ON
+    setup_priority: 2000
+    internal: true
+
+output:
+  - platform: ledc
+    pin: ${buzzer_pin}
+    id: buzzer_out
+
+# Musical tones - the stings after each verdict and the easter egg. The spin
+# ticks are not rtttl; think_spin drives buzzer_out directly.
+rtttl:
+  id: oracle_voice
+  output: buzzer_out
+  gain: 60%
+
+# The sad trombone - shares the buzzer pin and LEDC output with rtttl and
+# the spin ticks. Scripts still call rtttl.stop before handing it the pin.
+#   pwm_speech.play: sound: trombone         - returns at once, plays 3.24 s
+#   pwm_speech.stop / pwm_speech.is_playing
+pwm_speech:
+  id: speech
+  output: buzzer_out
+  contour_level: 50%           # trombone duty at its loudest step
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: pixels
+    internal: true
+    pin: ${pixel_pin}
+    num_leds: ${pixel_count}
+    chipset: WS2812
+    channel_colors: GRB
+    rmt_symbols: 48
+    default_transition_length: 80ms
+    effects:
+      # Prize wheel. The whole ring is lit white, and a single blue LED is the
+      # pointer. It starts on LED 0 and steps one LED per tick, the rest
+      # staying white, so the ring reads as a wheel clicking round. Speed
+      # falls at a steady rate to spin_end_speed, then the pointer stops.
+      #
+      # The wheel ticks: every time the pointer reaches a new LED it sounds one
+      # beep at a single fixed pitch, lasting spin_tone_fraction of the time
+      # to the next LED but never more than an eighth note at tempo_bpm. Fast spin =
+      # short, rapid ticks; as it coasts the ticks lengthen up to the cap and
+      # then stay short clicks with longer gaps. The effect drives buzzer_out
+      # directly, so the calling script must stop rtttl first and silence the
+      # output when the spin ends.
+      - addressable_lambda:
+          name: think_spin
+          update_interval: 8ms   # tick timing resolution
+          lambda: |-
+            static float pos = 0.0f;
+            static float speed = 0.0f;
+            static float end_speed = 0.0f;
+            static float decel = 0.0f;
+            static int final_step = 0;
+            static uint32_t last_ms = 0;
+            static int last_step = 0;
+            static bool tone_on = false;
+            static uint32_t tone_off_ms = 0;
+            if (initial_run) {
+              // Random tick count. Step 0 is the downbeat tick, so the last
+              // tick is step ticks - 1.
+              const int spread = ${spin_tick_spread};
+              const int ticks = ${spin_ticks} - spread +
+                                (int) (random_uint32() % (uint32_t) (2 * spread + 1));
+              final_step = ticks - 1;
+              // Steady slowdown from v0 to the end speed over t seconds
+              // covers (v0 + end_speed) / 2 * t LEDs. Pick v0 so that
+              // distance is exactly final_step.
+              const float t = (${spin_ms} - ${spin_settle_ms}) / 1000.0f;
+              end_speed = ${spin_end_speed};
+              pos = 0.0f;
+              speed = 2.0f * final_step / t - end_speed;
+              decel = (speed - end_speed) / t;
+              ESP_LOGD("think_spin", "%d ticks, start %.1f LED/s", ticks, speed);
+              last_ms = millis();
+              last_step = -1;   // forces a tick on the very first frame
+              tone_on = false;
+              id(buzzer_out).update_frequency(${spin_tone_hz});
+            }
+            const uint32_t now = millis();
+            const float dt = (now - last_ms) / 1000.0f;
+            last_ms = now;
+            // Slow down at a steady rate, in real time so the feel does not
+            // depend on update_interval. Average the old and new speeds so
+            // the distance is exact. The wheel stops dead on the last tick.
+            const float new_speed = fmaxf(end_speed, speed - decel * dt);
+            pos += 0.5f * (speed + new_speed) * dt;
+            speed = new_speed;
+            if (pos > final_step)
+              pos = final_step;
+
+            // One tick per LED step, length proportional to the step period
+            // up to an eighth note at tempo_bpm.
+            const int step = (int) pos;
+            if (step != last_step) {
+              last_step = step;
+              const float len_ms =
+                  fminf((1000.0f / speed) * ${spin_tone_fraction}, 30000.0f / ${tempo_bpm});
+              id(buzzer_out).set_level(${spin_tone_level});
+              tone_off_ms = now + (uint32_t) len_ms;
+              tone_on = true;
+            } else if (tone_on && (int32_t) (now - tone_off_ms) >= 0) {
+              id(buzzer_out).set_level(0.0f);
+              tone_on = false;
+            }
+            const int n = it.size();
+            if (n <= 0)
+              return;
+            // White wheel, one blue pointer. The pointer moves in whole-LED
+            // steps, in lockstep with the ticks above. White is dimmed so the
+            // blue stands out against it.
+            const uint8_t w = (uint8_t) (255 * ${spin_white_level});
+            it.all() = Color(w, w, w);
+            int p = step % n;
+            if (${ring_cw} < 0)
+              p = (n - p) % n;   // walk the other way round the ring
+            it[p] = Color(0, 0, 255);
+
+      # YES: green fills the ring clockwise from LED 0. Time-based, so it
+      # always takes exactly yes_fill_ms: first LED at 0 ms, last at
+      # yes_fill_ms. Starts from black, whatever the buffer held before.
+      - addressable_lambda:
+          name: fill_yes
+          update_interval: 16ms
+          lambda: |-
+            static uint32_t start_ms = 0;
+            if (initial_run)
+              start_ms = millis();
+            const int n = it.size();
+            if (n <= 0)
+              return;
+            const uint32_t elapsed = millis() - start_ms;
+            int lit = n > 1 ? 1 + (int) (elapsed * (n - 1) / ${yes_fill_ms}) : 1;
+            if (lit > n)
+              lit = n;
+            it.all() = Color::BLACK;
+            for (int k = 0; k < lit; k++) {
+              const int idx = ${ring_cw} > 0 ? k : (n - k) % n;
+              it[idx] = Color(0, 255, 38);   // green + 15% blue
+            }
+
+      - pulse:
+          name: breathe
+          transition_length: 1600ms
+          update_interval: 1800ms
+
+      - addressable_flicker:
+          name: angry_flicker
+          update_interval: 40ms
+          intensity: 70%
+
+binary_sensor:
+  - platform: gpio
+    id: ask_button
+    internal: true
+    pin:
+      number: ${button_pin}
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 20ms
+    on_click:
+      - min_length: 30ms
+        max_length: 900ms
+        then:
+          - script.execute: tell_fortune
+      - min_length: 1500ms
+        max_length: 8000ms
+        then:
+          - script.execute: spirits_angry
+
+globals:
+  - id: roll
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+script:
+  - id: idle_glow
+    mode: restart
+    then:
+      - light.turn_on:
+          id: pixels
+          brightness: 10%
+          red: 40%
+          green: 0%
+          blue: 100%
+          effect: breathe
+      # Stays running through the timeout so tell_fortune and spirits_angry
+      # can cancel it with script.stop before it turns the ring off.
+      - delay: ${idle_timeout}
+      - light.turn_off:
+          id: pixels
+          transition_length: 2s
+
+  # --- The main event ------------------------------------------------------
+  - id: tell_fortune
+    mode: single
+    then:
+      - script.stop: idle_glow
+      - rtttl.stop:
+      - pwm_speech.stop: speech
+      - light.turn_off:
+          id: pixels
+          transition_length: 0s
+      - delay: 150ms
+
+      # Thinking: a white wheel with a blue pointer clicking round, coasting
+      # to a stop. think_spin sets its own colours and ticks the buzzer
+      # itself, one beep per LED, so no melody plays here.
+      - light.turn_on:
+          id: pixels
+          brightness: 100%
+          red: 100%
+          green: 100%
+          blue: 100%
+          effect: think_spin
+      - delay: ${spin_ms}ms   # last tick at spin_ms - spin_settle_ms, then the pointer holds
+
+      # Suspense. Dead dark, dead silent. The effect stops with the light, so
+      # silence the buzzer explicitly in case it stopped mid-tick.
+      - light.turn_off:
+          id: pixels
+          transition_length: 0s
+      - output.turn_off: buzzer_out
+      - delay: 900ms
+
+      # random_uint32() is a PRNG seeded once per boot from the hardware RNG,
+      # which is only pseudo-random while no radio is running - and this
+      # device has none - so the seed and every verdict after it can repeat
+      # from one power-up to the next. Mix in the microsecond clock, which
+      # depends on exactly when the button was pressed, then scramble the
+      # bits (MurmurHash3 finaliser) so every bit of it counts.
+      - lambda: |-
+          uint32_t z = random_uint32() ^ micros();
+          z = (z ^ (z >> 16)) * 0x85ebca6bu;
+          z = (z ^ (z >> 13)) * 0xc2b2ae35u;
+          z ^= z >> 16;
+          id(roll) = z % 100;
+          ESP_LOGI("fortune", "Roll %d: %s", id(roll),
+                   id(roll) < ${yes_max} ? "yes" : "no");
+      - if:
+          condition:
+            lambda: "return id(roll) < ${yes_max};"
+          then:
+            - script.execute: verdict_yes
+          else:
+            - script.execute: verdict_no
+
+  # --- YES -----------------------------------------------------------------
+  - id: verdict_yes
+    mode: restart
+    then:
+      - rtttl.stop:
+      # Green fills the ring clockwise over yes_fill_ms.
+      - light.turn_on:
+          id: pixels
+          brightness: 100%
+          red: 0%
+          green: 100%
+          blue: 15%
+          effect: fill_yes
+      - delay: ${yes_fill_ms}ms
+      # Hold solid green for the chime.
+      - light.turn_on:
+          id: pixels
+          effect: none
+          brightness: 100%
+          red: 0%
+          green: 100%
+          blue: 15%
+      # Rising fourth: C5 for an eighth, F5 for three eighths (dotted
+      # quarter). 2 beats in all, 1.0 s at 120 bpm.
+      - rtttl.play: "yes:d=8,o=5,b=${tempo_bpm}:c,4f."
+      - delay: !lambda "return 2 * 60000 / ${tempo_bpm};"
+      - rtttl.stop:
+      - delay: 1500ms
+      - script.execute: idle_glow
+
+  # --- NO ------------------------------------------------------------------
+  - id: verdict_no
+    mode: restart
+    then:
+      - rtttl.stop:
+      # Instant red. tell_fortune's explicit turn_off already stopped the spin
+      # effect, so no effect: key is needed - and it could not be combined
+      # with transition_length anyway.
+      - light.turn_on:
+          id: pixels
+          brightness: 100%
+          red: 100%
+          green: 0%
+          blue: 0%
+          transition_length: 0s
+      # Three blinks, one per beat: half a beat lit, half a beat dark. Ends lit.
+      - repeat:
+          count: 3
+          then:
+            - delay: !lambda "return 30000 / ${tempo_bpm};"
+            - light.turn_off:
+                id: pixels
+                transition_length: 0s
+            - delay: !lambda "return 30000 / ${tempo_bpm};"
+            - light.turn_on:
+                id: pixels
+                brightness: 100%
+                red: 100%
+                green: 0%
+                blue: 0%
+                transition_length: 0s
+      # Sad trombone: returns at once and plays for 3.24 s; wait for it.
+      - pwm_speech.play:
+          id: speech
+          sound: trombone
+      - wait_until:
+          condition:
+            not:
+              pwm_speech.is_playing: speech
+      - light.turn_on:
+          id: pixels
+          brightness: 15%
+          transition_length: 1200ms
+      - delay: 1200ms
+      - script.execute: idle_glow
+
+  # --- Easter egg: hold the button for 1.5s --------------------------------
+  - id: spirits_angry
+    mode: restart
+    then:
+      - script.stop: tell_fortune
+      - script.stop: idle_glow
+      - rtttl.stop:
+      - pwm_speech.stop: speech
+      - light.turn_on:
+          id: pixels
+          brightness: 100%
+          red: 100%
+          green: 0%
+          blue: 100%
+          effect: angry_flicker
+      - rtttl.play: "angry:d=8,o=5,b=100:c,c#,c,c#,4a4,16p,c,c#,4g4,2p,1a4"
+      - delay: 4500ms
+      - light.turn_off:
+          id: pixels
+          transition_length: 1500ms
+      - delay: 1600ms
+      - script.execute: idle_glow
