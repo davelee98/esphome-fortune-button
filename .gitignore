@@ -1,3 +1,8 @@
 .esphome/
 __pycache__/
 secrets.yaml
+
+# audio/ pipeline: the input recording (not ours to redistribute) and intermediates
+audio/reference.mp3
+audio/ref_trombone.wav
+audio/ref_contour.npz

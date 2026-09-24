@@ -124,6 +124,29 @@ The name is left over from an earlier version that also spoke the words
 "yes" and "no". The kit's buzzer couldn't reproduce speech, so the words were
 removed.
 
+### Regenerating the trombone
+
+`contour_data.h` is generated from a recording of a sad trombone. You only
+need to regenerate it to change the sound, for example to transpose it or
+trim it. It needs Python with NumPy and SciPy, plus ffmpeg.
+
+The recording isn't in the repo, because it isn't ours to redistribute.
+Supply your own as `audio/reference.mp3`; `.gitignore` keeps it out of
+commits. Only the pitch and loudness contour measured from it is committed.
+Then, from `audio/`:
+
+```sh
+ffmpeg -i reference.mp3 -ac 1 -ar 22050 ref_trombone.wav
+python analyse_ref.py       # pitch and loudness track -> ref_contour.npz
+python build_from_ref.py    # -> ../components/pwm_speech/contour_data.h
+```
+
+The knobs are at the top of `build_from_ref.py`: the part of the recording
+to use (`T_START`, `T_END`), where the final note lands (`TARGET_TAIL_HZ`)
+and the step length (`STEP_MS`). The time windows are tuned to the original
+recording, so a different one needs them adjusted, as does the final-note
+window (`t > 2.5` to `t < 3.3`) in `build()`.
+
 ## License
 
 [GNU General Public License v3.0](LICENSE). You may use, modify and
