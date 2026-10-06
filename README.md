@@ -39,7 +39,7 @@ file.
 ```
 esphome-fortune-button/
 ├── fortune-button.yaml
-└── components/pwm_speech/     # plays the sad trombone
+└── components/fortune_button/  # all animations, timing and sound
 ```
 
 With the ESPHome CLI, from the repo root:
@@ -54,8 +54,8 @@ copy `fortune-button.yaml` up to the top level beside it, and in that copy
 change the component path to `path: fortune-button/components`.
 
 There's no OTA, because there's no network, so flash it over USB-C. It needs
-ESP-IDF, as ESPHome doesn't support Arduino on the C6. It was built and tested
-with ESPHome 2026.8.
+ESP-IDF, as ESPHome doesn't support Arduino on the C6. This component targets
+ESPHome 2026.8.
 
 On Windows, turn on long paths (`LongPathsEnabled=1`) before the first
 compile, or the ESP-IDF toolchain fails with
@@ -65,64 +65,94 @@ compile, or the ESP-IDF toolchain fails with
 
 | Phase | Light | Sound | Length |
 |---|---|---|---|
-| Idle | Violet breathing at 10% brightness, off after 60 s with no press | — | — |
+| Idle | Violet breathing from 0 to 100%, fades out after 60 s idle | — | — |
 | Spin | White ring, blue pointer stepping round | One tick per step | 5.6 s |
 | Suspense | Dark | Silent | 0.9 s |
 | Yes | Green fills the ring, then holds | Rising chime | 3.5 s |
 | No | Red, three blinks, then fades | Sad trombone | 5.9 s |
+| Easter egg | Magenta flicker, then smooth fade to black | Dissonant melody | Lights: 6.1 s; sound: 6.75 s |
 
 Each spin makes a random 50–60 steps (at least five laps of the ring). It
 starts at 17–21 steps a second and slows steadily to 2 a second. Beeps are
-half the gap between steps, up to an eighth note at the tempo.
+half the gap between steps, up to an eighth note at the tempo. The tick pitch
+is E7 at 2637 Hz, the nearest note to the buzzer's 2700 Hz resonance. A 150 ms
+dark lead-in precedes the full 5.6 s spin, including its final 500 ms settle.
+
+Short presses during the spin or suspense are ignored. Short presses during
+a verdict or the easter egg start a fresh reading and cancel the old lights
+and sound. A long hold interrupts any phase with the easter egg. A button
+held while plugging in is ignored until released; the next fresh press works.
+
+The angry fade freezes the last flickered frame and fades it smoothly to
+black. Its melody continues briefly into idle unless another accepted press
+cuts it off. Deliberate fades retain ESPHome's smooth interpolation; the old
+incidental 80 ms transitions are omitted.
 
 The yes/no roll is made fresh on every press. It mixes the microsecond at
-which it runs, so it depends on exactly when you pressed. That way it can't
-repeat from one power-up to the next, even though with no radio running the
-chip's RNG is only pseudo-random. Each roll is logged, for example
+which it runs, so it depends on exactly when you pressed. This reduces
+repeatable patterns across power-ups while no radio is running. Each roll
+is logged, for example
 `fortune: Roll 37: yes`.
 
 ## Settings
 
-Everything tunable is in `substitutions:` at the top of the YAML.
+Pins and LED count stay in the YAML's `substitutions:`. The chance of yes is
+`yes_percent` in the `fortune_button:` block: an integer from 0 to 100,
+defaulting to 50. Zero always gives no; 100 always gives yes.
+
+Other tuning values are constants in `components/fortune_button/fortune_button.h`.
+Editing them requires rebuilding and flashing.
 
 | Setting | Default | Effect |
 |---|---|---|
-| `yes_max` | `50` | Percentage chance of yes |
-| `idle_timeout` | `60s` | Idle glow turns off after this long with no press |
-| `tempo_bpm` | `120` | Tempo of the yes chime and the no blinks, and the tick-length cap |
-| `yes_fill_ms` | `1000` | Time for green to fill the ring |
-| `spin_ticks` / `spin_tick_spread` | `55` / `5` | Each spin makes a random 50–60 steps |
-| `spin_end_speed` | `2` | Steps per second when the wheel stops |
-| `spin_ms` | `5600` | Length of the spin |
-| `spin_settle_ms` | `500` | How long the pointer holds on its last step |
-| `spin_white_level` | `0.6` | Brightness of the white ring during the spin |
-| `spin_tone_hz` | `2700` | Tick pitch (the buzzer's resonance, its loudest note) |
-| `spin_tone_fraction` | `0.5` | Tick length as a fraction of the gap between steps |
-| `spin_tone_level` | `0.5` | Tick volume as PWM duty (0.5 is loudest) |
-| `ring_cw` | `1` | Set to `-1` if the spin and fill go anticlockwise on your ring |
+| `IDLE_TIMEOUT_MS` | `60000` | Idle glow fades out after this many milliseconds |
+| `TEMPO_BPM` | `120` | Tempo of the yes chime and no blinks, and the tick-length cap |
+| `YES_FILL_MS` | `1000` | Time for green to fill the ring |
+| `SPIN_TICKS` / `SPIN_TICK_SPREAD` | `55` / `5` | Each spin makes a random 50–60 steps |
+| `SPIN_END_SPEED` | `2` | Steps per second when the wheel stops |
+| `SPIN_MS` | `5600` | Length of the spin, including the settle |
+| `SPIN_SETTLE_MS` | `500` | How long the pointer holds on its last step |
+| `SPIN_WHITE_LEVEL` | `0.6` | Brightness of the white ring during the spin |
+| `SPIN_TONE_HZ` | `2637` | Tick pitch: E7 |
+| `SPIN_TONE_FRACTION` | `0.5` | Tick length as a fraction of the gap between steps |
+| `SPIN_TONE_LEVEL` | `0.5` | Tick duty (0.5 is loudest) |
+| `RING_CLOCKWISE` | `true` | Set to `false` to reverse the spin and fill |
 
 The LED effects assume the 10 LEDs form a closed ring, with LED 9 next to
 LED 0.
 
-## The `pwm_speech` component
+## The `fortune_button` component
 
-A small local external component that plays the sad trombone on the buzzer
-pin. The trombone is a pitch and loudness contour measured from a recording,
-270 steps of 12 ms (3.24 s) in `contour_data.h`. The component replays it
-from elapsed time, so it doesn't block the main loop and always lasts exactly
-3.24 s. A new press or a long hold cuts it off.
+A local external component owns the entire fortune sequence. YAML describes
+the hardware and supplies three references:
 
 ```yaml
-pwm_speech.play:
-  id: speech
-  sound: trombone          # starts it and returns at once
-pwm_speech.stop: speech    # silences it
-pwm_speech.is_playing: speech   # condition
+fortune_button:
+  light: led_ring
+  output: buzzer
+  button: ask_button
+  yes_percent: 50
 ```
 
-The name is left over from an earlier version that also spoke the words
-"yes" and "no". The kit's buzzer couldn't reproduce speech, so the words were
-removed.
+`light` must be an addressable light, `output` must be LEDC, and `button` is
+the filtered binary sensor. The LEDC requirement makes this component
+ESP32-only. Keep the ring and buzzer exclusively under the component's
+control: no other light effects, automations or sound players should write
+to them. Keep the ring internal. Accessory power stays in the hardware YAML.
+
+The state machine uses elapsed time without blocking. All animations use a
+16 ms render cadence; flicker values change no more often than every 40 ms.
+The sad trombone is the existing pitch/loudness contour: 270 steps of 12 ms,
+3.24 s in `contour_data.h`. A fast-loop request is used only while replaying
+that contour; LED rendering remains throttled. Melodies use fixed note
+tables, with no RTTTL parser. Shutdown silences the buzzer and stops the
+fast-loop request.
+
+After changing or building the component, check configuration with
+`esphome config fortune-button.yaml`, then verify on hardware: normal and
+long presses, restart during verdicts, ignored short presses during the
+spin, a held button at boot, idle timeout, fades and sound. The 0/100 odds
+settings can force each verdict for these checks.
 
 ### Regenerating the trombone
 
@@ -138,7 +168,7 @@ Then, from `audio/`:
 ```sh
 ffmpeg -i reference.mp3 -ac 1 -ar 22050 ref_trombone.wav
 python analyse_ref.py       # pitch and loudness track -> ref_contour.npz
-python build_from_ref.py    # -> ../components/pwm_speech/contour_data.h
+python build_from_ref.py    # -> ../components/fortune_button/contour_data.h
 ```
 
 The knobs are at the top of `build_from_ref.py`: the part of the recording
