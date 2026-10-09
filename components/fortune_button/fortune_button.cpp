@@ -32,24 +32,26 @@ void FortuneButton::setup() {
   this->fade_frame_.resize(this->strip_->size());
   this->silence_();
 
-  auto call = this->light_->turn_on();
-  call.set_brightness(1.0f);
-  call.set_color_brightness(1.0f);
-  call.set_rgb(1.0f, 1.0f, 1.0f);
-  call.set_white_if_supported(0.0f);
-  call.set_transition_length(uint32_t{0});
-  call.set_save(false);
-  call.perform();
-  this->strip_->set_effect_active(true);
-  this->strip_->all() = Color::BLACK;
-  this->frame_dirty_ = true;
+  if (!this->share_light_) {
+    auto call = this->light_->turn_on();
+    call.set_brightness(1.0f);
+    call.set_color_brightness(1.0f);
+    call.set_rgb(1.0f, 1.0f, 1.0f);
+    call.set_white_if_supported(0.0f);
+    call.set_transition_length(uint32_t{0});
+    call.set_save(false);
+    call.perform();
+    this->strip_->set_effect_active(true);
+    this->strip_->all() = Color::BLACK;
+    this->frame_dirty_ = true;
+  }
 
   this->pressed_ = false;
   this->armed_ = this->button_->has_state() && !this->button_->state;
   this->button_->add_on_state_callback([this](bool pressed) { this->on_button_(pressed); });
   this->enter_phase_(Phase::IDLE, millis());
-  // Overwrite the setup call's white buffer before its queued transmission.
-  this->render_(millis());
+  if (!this->share_light_)
+    this->render_(millis());  // Overwrite setup's white buffer before its queued transmission.
 }
 
 void FortuneButton::dump_config() {
@@ -57,6 +59,7 @@ void FortuneButton::dump_config() {
   ESP_LOGCONFIG(TAG, "  Yes probability: %u%%", unsigned(this->yes_percent_));
   ESP_LOGCONFIG(TAG, "  Ring: %d LEDs", int(this->strip_->size()));
   ESP_LOGCONFIG(TAG, "  Tick pitch: %u Hz", unsigned(SPIN_TONE_HZ));
+  ESP_LOGCONFIG(TAG, "  Share light: %s", this->share_light_ ? "YES" : "NO");
 }
 
 void FortuneButton::on_button_(bool pressed) {
@@ -84,6 +87,12 @@ void FortuneButton::on_button_(bool pressed) {
 }
 
 void FortuneButton::enter_phase_(Phase phase, uint32_t now) {
+  const bool was_active = this->phase_ != Phase::IDLE && this->phase_ != Phase::IDLE_OFF;
+  const bool active = phase != Phase::IDLE && phase != Phase::IDLE_OFF;
+  if (!was_active && active) {
+    this->redraw_ = true;
+    this->start_trigger_.trigger();  // Hand off before ANGRY's immediate pixel fill.
+  }
   this->phase_ = phase;
   this->phase_start_ms_ = now;
   this->sound_started_ = false;
@@ -108,6 +117,8 @@ void FortuneButton::enter_phase_(Phase phase, uint32_t now) {
     this->last_flicker_ms_ = now;
     this->fill_(ANGRY_COLOR);
   }
+  if (was_active && !active)
+    this->finish_trigger_.trigger();
 }
 
 void FortuneButton::loop() {
@@ -203,6 +214,8 @@ float FortuneButton::pulse_level_(uint32_t now) const {
 void FortuneButton::render_(uint32_t now) {
   this->render_pending_ = false;
   this->last_render_ms_ = now;
+  if (this->share_light_ && (this->phase_ == Phase::IDLE || this->phase_ == Phase::IDLE_OFF))
+    return;
   const uint32_t elapsed = now - this->phase_start_ms_;
   switch (this->phase_) {
     case Phase::IDLE:
@@ -292,10 +305,11 @@ void FortuneButton::render_(uint32_t now) {
     this->strip_->schedule_show();
     this->frame_dirty_ = false;
   }
+  this->redraw_ = false;
 }
 
 void FortuneButton::set_pixel_(size_t index, Color color) {
-  if (this->frame_[index] != color) {
+  if (this->redraw_ || this->frame_[index] != color) {
     this->frame_[index] = color;
     (*this->strip_)[index] = color;
     this->frame_dirty_ = true;
