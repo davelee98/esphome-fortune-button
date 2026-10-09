@@ -85,7 +85,7 @@ class FortuneButton : public Component {
   float get_setup_priority() const override { return setup_priority::LATE; }
 
  protected:
-  enum class Phase : uint8_t { IDLE, SPIN, SUSPENSE, YES, NO, ANGRY };
+  enum class Phase : uint8_t { IDLE, IDLE_OFF, SPIN, SUSPENSE, YES, NO, ANGRY };
   void on_button_(bool pressed);
   void enter_phase_(Phase phase, uint32_t now);
   void update_phase_(uint32_t now);

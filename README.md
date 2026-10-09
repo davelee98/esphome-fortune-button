@@ -32,14 +32,25 @@ The temperature/humidity and PIR modules in the kit aren't used.
 
 ## Build and flash
 
-Keep the directory layout as it is. The YAML loads the local component with
-`external_components: path: components`, which resolves relative to the YAML
-file.
+[fortune-button.yaml](fortune-button.yaml) is the complete standalone device
+example, including the starter kit's accessory power switch. Keep the
+directory layout as it is:
 
 ```
 esphome-fortune-button/
 ├── fortune-button.yaml
 └── components/fortune_button/  # all animations, timing and sound
+```
+
+The example loads the local component with this block. The path resolves
+relative to the device YAML:
+
+```yaml
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [fortune_button]
 ```
 
 With the ESPHome CLI, from the repo root:
@@ -54,12 +65,28 @@ copy `fortune-button.yaml` up to the top level beside it, and in that copy
 change the component path to `path: fortune-button/components`.
 
 There's no OTA, because there's no network, so flash it over USB-C. It needs
-ESP-IDF, as ESPHome doesn't support Arduino on the C6. This component targets
-ESPHome 2026.8.
+ESP-IDF, as ESPHome doesn't support Arduino on the C6. This component needs
+ESPHome 2026.8 or later; it has been compiled on 2026.8.0 and 2026.9.1.
 
 On Windows, turn on long paths (`LongPathsEnabled=1`) before the first
 compile, or the ESP-IDF toolchain fails with
 `bits/c++config.h: No such file`.
+
+### Load from GitHub
+
+To use the component without copying its source into your config directory,
+copy [fortune-button.yaml](fortune-button.yaml) and replace only its
+`external_components:` block with:
+
+```yaml
+external_components:
+  - source: github://davelee98/esphome-fortune-button@main
+    components: [fortune_button]
+```
+
+This follows `main`. For repeatable builds, replace `main` with a release tag
+when one is available. Both source forms use ESPHome's standard
+[external component loading](https://esphome.io/components/external_components/).
 
 ## Behaviour
 
@@ -82,6 +109,9 @@ Short presses during the spin or suspense are ignored. Short presses during
 a verdict or the easter egg start a fresh reading and cancel the old lights
 and sound. A long hold interrupts any phase with the easter egg. A button
 held while plugging in is ignored until released; the next fresh press works.
+
+After the idle glow's 2 s fade finishes, the ring stays dark until the next
+accepted press, including across millisecond-counter rollover.
 
 The angry fade freezes the last flickered frame and fades it smoothly to
 black. Its melody continues briefly into idle unless another accepted press
@@ -123,10 +153,45 @@ LED 0.
 
 ## The `fortune_button` component
 
-A local external component owns the entire fortune sequence. YAML describes
-the hardware and supplies three references:
+A single external component owns the entire fortune sequence. YAML describes
+the hardware and supplies three references. The implementation keeps timing,
+rendering and sound in one class to minimize maintained code.
+
+### Add to an existing device YAML
+
+Use either `external_components:` block above, then merge these entries into
+your device's existing `output:`, `light:` and `binary_sensor:` lists. This
+example uses the starter kit's pins; adapt them to your wiring:
 
 ```yaml
+output:
+  - platform: ledc
+    pin: GPIO18
+    id: buzzer
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: led_ring
+    internal: true
+    pin: GPIO14
+    num_leds: 10
+    chipset: WS2812
+    channel_colors: GRB
+    rmt_symbols: 48
+
+binary_sensor:
+  - platform: gpio
+    id: ask_button
+    internal: true
+    pin:
+      number: GPIO6
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 20ms
+
 fortune_button:
   light: led_ring
   output: buzzer
@@ -138,7 +203,15 @@ fortune_button:
 the filtered binary sensor. The LEDC requirement makes this component
 ESP32-only. Keep the ring and buzzer exclusively under the component's
 control: no other light effects, automations or sound players should write
-to them. Keep the ring internal. Accessory power stays in the hardware YAML.
+to them. Keep the ring and button internal. The button filter delays presses
+by 20 ms and lets releases through immediately.
+
+On the starter kit, also copy the `accessory_power` switch and
+`esphome.on_shutdown` action from the complete example: GPIO4 must enable
+the buzzer supply before the outputs start. Other boards may not need this
+switch. Use the example's ESP32-C6/ESP-IDF configuration for the kit. If your
+existing device uses `wifi:` and `api:`, set `reboot_timeout: 0s` in both so
+a network disconnection cannot interrupt the toy.
 
 The state machine uses elapsed time without blocking. All animations use a
 16 ms render cadence; flicker values change no more often than every 40 ms.
@@ -148,11 +221,17 @@ that contour; LED rendering remains throttled. Melodies use fixed note
 tables, with no RTTTL parser. Shutdown silences the buzzer and stops the
 fast-loop request.
 
-After changing or building the component, check configuration with
-`esphome config fortune-button.yaml`, then verify on hardware: normal and
-long presses, restart during verdicts, ignored short presses during the
-spin, a held button at boot, idle timeout, fades and sound. The 0/100 odds
-settings can force each verdict for these checks.
+After changing the component, validate and compile the complete example:
+
+```sh
+esphome config fortune-button.yaml
+esphome compile fortune-button.yaml
+```
+
+Then verify on hardware: normal and long presses, restart during verdicts,
+ignored short presses during the spin, a held button at boot, idle timeout,
+fades and sound. The 0/100 odds settings can force each verdict for these
+checks.
 
 ### Regenerating the trombone
 

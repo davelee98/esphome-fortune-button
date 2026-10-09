@@ -56,7 +56,7 @@ void FortuneButton::dump_config() {
   ESP_LOGCONFIG(TAG, "Fortune Button:");
   ESP_LOGCONFIG(TAG, "  Yes probability: %u%%", unsigned(this->yes_percent_));
   ESP_LOGCONFIG(TAG, "  Ring: %d LEDs", int(this->strip_->size()));
-  ESP_LOGCONFIG(TAG, "  Tick pitch: %u Hz (E7)", unsigned(SPIN_TONE_HZ));
+  ESP_LOGCONFIG(TAG, "  Tick pitch: %u Hz", unsigned(SPIN_TONE_HZ));
 }
 
 void FortuneButton::on_button_(bool pressed) {
@@ -165,6 +165,10 @@ void FortuneButton::update_phase_(uint32_t now) {
         this->enter_phase_(Phase::IDLE, now);  // Let the angry melody finish in idle.
       break;
     case Phase::IDLE:
+      if (elapsed >= IDLE_TIMEOUT_MS + IDLE_FADE_MS)
+        this->enter_phase_(Phase::IDLE_OFF, now);  // Stay dark across millis() rollover.
+      break;
+    case Phase::IDLE_OFF:
       break;
   }
 }
@@ -232,6 +236,7 @@ void FortuneButton::render_(uint32_t now) {
           this->set_pixel_(i, i == pointer ? Color(0, 0, 255) : Color(white, white, white));
       }
       break;
+    case Phase::IDLE_OFF:
     case Phase::SUSPENSE:
       this->fill_(Color::BLACK);
       break;
