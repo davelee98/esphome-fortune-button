@@ -57,6 +57,7 @@ void FortuneButton::setup() {
 void FortuneButton::dump_config() {
   ESP_LOGCONFIG(TAG, "Fortune Button:");
   ESP_LOGCONFIG(TAG, "  Yes probability: %u%%", unsigned(this->yes_percent_));
+  ESP_LOGCONFIG(TAG, "  Brightness: %u%%", (this->brightness_ * 100u + 127u) / 255u);
   ESP_LOGCONFIG(TAG, "  Ring: %d LEDs", int(this->strip_->size()));
   ESP_LOGCONFIG(TAG, "  Tick pitch: %u Hz", unsigned(SPIN_TONE_HZ));
   ESP_LOGCONFIG(TAG, "  Share light: %s", this->share_light_ ? "YES" : "NO");
@@ -281,14 +282,14 @@ void FortuneButton::render_(uint32_t now) {
           this->last_flicker_ms_ = now;
           const uint8_t intensity = light::to_uint8_scale(FLICKER_INTENSITY);
           uint32_t rng = random_uint32();
-          // Same random dimming and recovery as AddressableFlickerEffect.
+          // Same random dimming and recovery as AddressableFlickerEffect, applied to the
+          // unscaled frame so brightness doesn't compound on every update.
           for (size_t i = 0; i < this->frame_.size(); i++) {
             rng = rng * 0x9E3779B9u + 0x9E37u;
             const uint8_t flicker = (rng & 0xFF) % intensity;
-            auto pixel = (*this->strip_)[i];
-            pixel = pixel.get() * (255 - flicker);
-            this->frame_[i] = (pixel.get() * (255 - intensity)) + (ANGRY_COLOR * intensity);
-            pixel = this->frame_[i];
+            const Color dimmed = this->frame_[i] * (255 - flicker);
+            this->frame_[i] = (dimmed * (255 - intensity)) + (ANGRY_COLOR * intensity);
+            (*this->strip_)[i] = this->frame_[i] * this->brightness_;
           }
           this->frame_dirty_ = true;
         }
@@ -311,7 +312,7 @@ void FortuneButton::render_(uint32_t now) {
 void FortuneButton::set_pixel_(size_t index, Color color) {
   if (this->redraw_ || this->frame_[index] != color) {
     this->frame_[index] = color;
-    (*this->strip_)[index] = color;
+    (*this->strip_)[index] = color * this->brightness_;
     this->frame_dirty_ = true;
   }
 }
