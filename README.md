@@ -201,10 +201,12 @@ fortune_button:
 
 `light` must be an addressable light, `output` must be LEDC, and `button` is
 the filtered binary sensor. The LEDC requirement makes this component
-ESP32-only. Keep the ring and buzzer exclusively under the component's
-control: no other light effects, automations or sound players should write
-to them. Keep the ring and button internal. The button filter delays presses
-by 20 ms and lets releases through immediately.
+ESP32-only. By default, keep the ring and buzzer exclusively under the
+component's control: no other light effects, automations or sound players
+should write to them. The ring can be shared through an explicit handoff as
+described below; the buzzer remains exclusive. Keep the ring and button
+internal. The button filter delays presses by 20 ms and lets releases
+through immediately.
 
 On the starter kit, also copy the `accessory_power` switch and
 `esphome.on_shutdown` action from the complete example: GPIO4 must enable
@@ -212,6 +214,67 @@ the buzzer supply before the outputs start. Other boards may not need this
 switch. Use the example's ESP32-C6/ESP-IDF configuration for the kit. If your
 existing device uses `wifi:` and `api:`, set `reboot_timeout: 0s` in both so
 a network disconnection cannot interrupt the toy.
+
+### Share the light with another renderer
+
+Set `share_light: true` to draw only during a reading or the easter egg.
+Fortune then leaves the light's state, brightness and effect unchanged and
+draws nothing at boot or while idle. The default is `false`, which retains
+the standalone idle glow and fade-out.
+
+The other owner must keep the light **on at 100% brightness with its
+addressable effect running**. It must pause only its pixel writes while
+Fortune is active. Stopping the effect lets the light overwrite Fortune's
+pixels. Fortune forces a complete first frame on every takeover so colours
+from the other renderer cannot remain behind.
+
+Use `on_start` and `on_finish` to coordinate that handoff. This fragment
+assumes the hardware IDs already exist and illustrates another renderer
+with ID `display_owner` and a synchronous `set_suspended(bool)` method;
+adapt those calls to your renderer's actual API:
+
+```yaml
+fortune_button:
+  light: led_ring
+  output: buzzer
+  button: ask_button
+  share_light: true
+  on_start:
+    - lambda: id(display_owner).set_suspended(true);
+  on_finish:
+    - lambda: id(display_owner).set_suspended(false);
+```
+
+On resume, the other owner must redraw its complete current frame, even if
+its status has not changed. Its inputs and timeouts can keep updating while
+its pixel writes are suspended.
+
+Both triggers also work in standalone mode:
+
+- `on_start` fires when an idle Fortune becomes active, before its first
+  pixel write.
+- `on_finish` fires when the active sequence returns to idle. This releases
+  the LEDs; the angry melody can continue briefly. It is not a shutdown or
+  reboot notification.
+- Restarts between active phases fire neither trigger: a short press during
+  a verdict or the easter egg, or a long hold during the spin, keeps the same
+  handoff. Ignored presses and the idle timeout also fire neither.
+
+Each trigger accepts one automation containing multiple actions. Suspend
+or resume the other renderer synchronously, before any `delay`, `wait_until`
+or asynchronous script work. Fortune continues as soon as the trigger call
+returns; it does not wait for deferred actions.
+
+Fortune uses its own fixed pixel levels. Brightness encoded only into the
+other renderer's frames does not affect them, but the underlying light's
+brightness still scales Fortune's output. It must remain at 100%.
+
+The other owner should be ready before a press. An early startup press can
+produce overwritten or black pixels, and the stale colour cache can keep
+them wrong until those pixels next change. Shared mode adds no startup
+readiness or recovery logic.
+
+### Timing and validation
 
 The state machine uses elapsed time without blocking. All animations use a
 16 ms render cadence; flicker values change no more often than every 40 ms.

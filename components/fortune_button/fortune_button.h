@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
@@ -77,6 +78,9 @@ class FortuneButton : public Component {
   void set_output(ledc::LEDCOutput *output) { this->output_ = output; }
   void set_button(binary_sensor::BinarySensor *button) { this->button_ = button; }
   void set_yes_percent(uint8_t percent) { this->yes_percent_ = percent; }
+  void set_share_light(bool share) { this->share_light_ = share; }
+  Trigger<> *get_start_trigger() { return &this->start_trigger_; }
+  Trigger<> *get_finish_trigger() { return &this->finish_trigger_; }
 
   void setup() override;
   void loop() override;
@@ -105,6 +109,9 @@ class FortuneButton : public Component {
   ledc::LEDCOutput *output_{nullptr};
   binary_sensor::BinarySensor *button_{nullptr};
   uint8_t yes_percent_{50};
+  bool share_light_{false};
+  Trigger<> start_trigger_;
+  Trigger<> finish_trigger_;
   bool armed_{false};
   bool pressed_{false};
   uint32_t press_start_ms_{0};
@@ -114,6 +121,7 @@ class FortuneButton : public Component {
   uint32_t last_render_ms_{0};
   bool render_pending_{false};
   bool frame_dirty_{false};
+  bool redraw_{false};
   bool sound_started_{false};
   bool fade_started_{false};
   std::vector<Color> frame_;
