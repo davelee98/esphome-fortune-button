@@ -78,6 +78,7 @@ class FortuneButton : public Component {
   void set_output(ledc::LEDCOutput *output) { this->output_ = output; }
   void set_button(binary_sensor::BinarySensor *button) { this->button_ = button; }
   void set_yes_percent(uint8_t percent) { this->yes_percent_ = percent; }
+  void set_brightness(float brightness) { this->brightness_ = light::to_uint8_scale(brightness); }
   void set_share_light(bool share) { this->share_light_ = share; }
   Trigger<> *get_start_trigger() { return &this->start_trigger_; }
   Trigger<> *get_finish_trigger() { return &this->finish_trigger_; }
@@ -109,6 +110,7 @@ class FortuneButton : public Component {
   ledc::LEDCOutput *output_{nullptr};
   binary_sensor::BinarySensor *button_{nullptr};
   uint8_t yes_percent_{50};
+  uint8_t brightness_{255};  // Scales every pixel written; 255 leaves colours unchanged.
   bool share_light_{false};
   Trigger<> start_trigger_;
   Trigger<> finish_trigger_;

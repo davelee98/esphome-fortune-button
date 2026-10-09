@@ -130,6 +130,10 @@ Pins and LED count stay in the YAML's `substitutions:`. The chance of yes is
 `yes_percent` in the `fortune_button:` block: an integer from 0 to 100,
 defaulting to 50. Zero always gives no; 100 always gives yes.
 
+`brightness` in the same block dims every animation, as a percentage from
+1% to 100%, defaulting to 100%. It scales Fortune's pixel colours before
+ESPHome's gamma correction, the same way a light's own brightness does.
+
 Other tuning values are constants in `components/fortune_button/fortune_button.h`.
 Editing them requires rebuilding and flashing.
 
@@ -197,6 +201,7 @@ fortune_button:
   output: buzzer
   button: ask_button
   yes_percent: 50
+  brightness: 100%
 ```
 
 `light` must be an addressable light, `output` must be LEDC, and `button` is
@@ -265,9 +270,10 @@ or resume the other renderer synchronously, before any `delay`, `wait_until`
 or asynchronous script work. Fortune continues as soon as the trigger call
 returns; it does not wait for deferred actions.
 
-Fortune uses its own fixed pixel levels. Brightness encoded only into the
-other renderer's frames does not affect them, but the underlying light's
-brightness still scales Fortune's output. It must remain at 100%.
+Fortune's pixel levels come from its own `brightness` option. Brightness
+encoded only into the other renderer's frames does not affect them, but the
+underlying light's brightness still scales Fortune's output. It must remain
+at 100%.
 
 The other owner should be ready before a press. An early startup press can
 produce overwritten or black pixels, and the stale colour cache can keep
